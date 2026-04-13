@@ -1,7 +1,8 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
-const User = require('../models/User');
-const auth = require('../middleware/auth');
+const User = require('../User');
+const Attendance = require('../Attendance');
+const auth = require('../../middleware/auth');
 
 const router = express.Router();
 
@@ -126,13 +127,24 @@ router.get('/me', auth, async (req, res) => {
   }
 });
 
-// POST /api/auth/register-face - Save face descriptor to user profile
+// POST /api/auth/register-face - Save enhanced AI face descriptor to user profile
 router.post('/register-face', auth, async (req, res) => {
   try {
-    const { faceDescriptor } = req.body;
+    const { faceDescriptor, isEnhanced, faceShape, retinaConfidence } = req.body;
     const userId = req.user.id;
 
-    if (!faceDescriptor || !Array.isArray(faceDescriptor) || faceDescriptor.length !== 128) {
+    if (!faceDescriptor || !Array.isArray(faceDescriptor)) {
+      return res.status(400).json({
+        message: 'Invalid face descriptor. Must be an array of numbers.'
+      });
+    }
+
+    // Validate descriptor length based on type
+    if (isEnhanced && faceDescriptor.length !== 256) {
+      return res.status(400).json({
+        message: 'Invalid enhanced face descriptor. Must be an array of 256 numbers.'
+      });
+    } else if (!isEnhanced && faceDescriptor.length !== 128) {
       return res.status(400).json({
         message: 'Invalid face descriptor. Must be an array of 128 numbers.'
       });
@@ -143,17 +155,30 @@ router.post('/register-face', auth, async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    user.faceDescriptor = faceDescriptor;
+    // Store enhanced AI features
+    if (isEnhanced) {
+      user.enhancedFaceDescriptor = faceDescriptor;
+      user.faceDescriptor = faceDescriptor.slice(0, 128); // Store standard version as fallback
+    } else {
+      user.faceDescriptor = faceDescriptor;
+    }
+
+    if (faceShape) user.faceShape = faceShape;
+    if (retinaConfidence) user.retinaConfidence = retinaConfidence;
+
     user.faceRegistered = true;
     await user.save();
 
     res.json({
-      message: 'Face registered successfully',
+      message: 'Advanced AI face registered successfully',
       user: {
         id: user._id,
         name: user.name,
         email: user.email,
         faceRegistered: user.faceRegistered,
+        faceShape: user.faceShape,
+        retinaConfidence: user.retinaConfidence,
+        isEnhanced: !!user.enhancedFaceDescriptor.length,
       },
     });
   } catch (error) {
@@ -180,7 +205,7 @@ router.get('/face-status', auth, async (req, res) => {
   }
 });
 
-// GET /api/auth/all-faces - Get all registered face descriptors (for matching)
+// GET /api/auth/all-faces - Get all registered enhanced AI face descriptors (for matching)
 router.get('/all-faces', auth, async (req, res) => {
   try {
     // Check if user is admin or if it's for face matching purposes
@@ -191,20 +216,65 @@ router.get('/all-faces', auth, async (req, res) => {
 
     const faces = await User.find({
       faceRegistered: true,
-      faceDescriptor: { $exists: true, $ne: [] }
-    }).select('_id name email faceDescriptor');
+      $or: [
+        { faceDescriptor: { $exists: true, $ne: [] } },
+        { enhancedFaceDescriptor: { $exists: true, $ne: [] } }
+      ]
+    }).select('_id name email faceDescriptor enhancedFaceDescriptor faceShape retinaConfidence');
 
     res.json({
       faces: faces.map(face => ({
         id: face._id,
         name: face.name,
         email: face.email,
-        faceDescriptor: face.faceDescriptor,
+        faceDescriptor: face.enhancedFaceDescriptor.length > 0 ? face.enhancedFaceDescriptor : face.faceDescriptor,
+        isEnhanced: face.enhancedFaceDescriptor.length > 0,
+        faceShape: face.faceShape,
+        retinaConfidence: face.retinaConfidence,
       })),
       count: faces.length,
     });
   } catch (error) {
     console.error('Get all faces error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// POST /api/auth/clear-face-data — remove face enrollment for current user
+router.post('/clear-face-data', auth, async (req, res) => {
+  try {
+    await User.findByIdAndUpdate(req.user.id, {
+      $set: {
+        faceDescriptor: [],
+        enhancedFaceDescriptor: [],
+        faceRegistered: false,
+        retinaConfidence: 0,
+      },
+      $unset: { faceShape: 1 },
+    });
+    res.json({ message: 'Face enrollment cleared. You can register again from Register Face.' });
+  } catch (error) {
+    console.error('Clear face data error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// DELETE /api/auth/account — delete user, attendance, and face data (requires password)
+router.delete('/account', auth, async (req, res) => {
+  try {
+    const { password } = req.body;
+    if (!password) {
+      return res.status(400).json({ message: 'Password is required to delete your account' });
+    }
+    const user = await User.findById(req.user.id).select('+password');
+    if (!user || !(await user.comparePassword(password))) {
+      return res.status(401).json({ message: 'Invalid password' });
+    }
+    await Attendance.deleteMany({ userId: user._id });
+    await User.deleteOne({ _id: user._id });
+    res.json({ message: 'Account deleted' });
+  } catch (error) {
+    console.error('Delete account error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });

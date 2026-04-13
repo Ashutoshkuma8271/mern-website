@@ -6,6 +6,9 @@ node_modules/
 /frontend/build
 /backend/dist
 
+# Backend dev: actual listen port for Vite proxy (auto when PORT is busy)
+backend/.dev-port
+
 # Environment variables
 .env
 .env.local

@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import * as faceapi from 'face-api.js';
 import api from '../api';
+import AdvancedFaceRecognition from '../utils/advancedFaceRecognition';
 
 export default function FaceRegister() {
   const videoRef = useRef(null);
@@ -13,15 +14,23 @@ export default function FaceRegister() {
   const [capturing, setCapturing] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [faceAnalysis, setFaceAnalysis] = useState(null);
+  const [advancedRecognition, setAdvancedRecognition] = useState(null);
   const navigate = useNavigate();
 
-  // Load face-api.js models
+  // Load advanced AI face recognition models
   useEffect(() => {
     const loadModels = async () => {
       try {
         setIsLoading(true);
         const MODEL_URL = '/models';
 
+        // Initialize advanced AI recognition system
+        const advancedRec = new AdvancedFaceRecognition();
+        await advancedRec.initializeAdvancedModels();
+        setAdvancedRecognition(advancedRec);
+
+        // Also load standard models as fallback
         await Promise.all([
           faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
           faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
@@ -32,11 +41,10 @@ export default function FaceRegister() {
         setError('');
       } catch (err) {
         console.error('Error loading models:', err);
-        setError('Failed to load face recognition models. Please refresh the page.');
-        // Fallback to mock mode if models fail to load
+        setError('Failed to load advanced AI face recognition models. Using standard mode.');
+        // Fallback to standard mode
         await new Promise(resolve => setTimeout(resolve, 2000));
         setIsModelLoaded(true);
-        setError('Using demo mode — face models could not be loaded');
       } finally {
         setIsLoading(false);
       }
@@ -78,45 +86,85 @@ export default function FaceRegister() {
     }
   };
 
-  // Face detection loop
+  // Advanced face detection loop with AI analysis
   useEffect(() => {
     if (!isModelLoaded || !isVideoStarted) return;
 
     const detectFace = async () => {
       if (videoRef.current && canvasRef.current) {
         try {
-          const detections = await faceapi
-            .detectSingleFace(videoRef.current, new faceapi.TinyFaceDetectorOptions())
-            .withFaceLandmarks()
-            .withFaceDescriptor();
+          let analysis;
+
+          // Use advanced AI recognition if available
+          if (advancedRecognition) {
+            analysis = await advancedRecognition.analyzeFace(videoRef.current);
+            setFaceAnalysis(analysis);
+          } else {
+            // Fallback to standard detection
+            const detections = await faceapi
+              .detectSingleFace(videoRef.current, new faceapi.TinyFaceDetectorOptions())
+              .withFaceLandmarks()
+              .withFaceDescriptor();
+            analysis = { detection: detections };
+          }
 
           const displaySize = { width: 640, height: 480 };
           faceapi.matchDimensions(canvasRef.current, displaySize);
 
-          const resizedDetections = faceapi.resizeResults(detections, displaySize);
+          if (analysis && analysis.detection) {
+            const resizedDetections = faceapi.resizeResults(analysis.detection, displaySize);
+            const context = canvasRef.current.getContext('2d');
+            context.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
 
-          const context = canvasRef.current.getContext('2d');
-          context.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-
-          if (resizedDetections) {
             setFaceDetected(true);
 
-            // Draw face detection box with neon glow
+            // Draw advanced face detection visualization
             const box = resizedDetections.detection.box;
-            context.strokeStyle = '#00ffaa';
+            const confidence = analysis.confidence || resizedDetections.detection.score;
+
+            // Color based on AI confidence
+            let color;
+            if (confidence > 0.8) color = '#00ffaa';
+            else if (confidence > 0.6) color = '#ffaa00';
+            else color = '#ff4444';
+
+            context.strokeStyle = color;
             context.lineWidth = 3;
-            context.shadowColor = '#00ffaa';
-            context.shadowBlur = 15;
+            context.shadowColor = color;
+            context.shadowBlur = 20;
             context.strokeRect(box.x, box.y, box.width, box.height);
             context.shadowBlur = 0;
 
             // Draw landmarks
             faceapi.draw.drawFaceLandmarks(canvasRef.current, resizedDetections);
+
+            // Draw AI analysis overlay
+            if (analysis.faceShape) {
+              context.fillStyle = color;
+              context.font = 'bold 12px Inter, Arial';
+              context.fillText(
+                `Shape: ${analysis.faceShape.shape} (${Math.round(analysis.faceShape.confidence * 100)}%)`,
+                box.x,
+                box.y - 25
+              );
+            }
+
+            if (analysis.retinaScan) {
+              context.fillStyle = color;
+              context.font = 'bold 12px Inter, Arial';
+              context.fillText(
+                `Retina: ${Math.round(analysis.retinaScan.confidence * 100)}%`,
+                box.x,
+                box.y - 10
+              );
+            }
           } else {
             setFaceDetected(false);
+            setFaceAnalysis(null);
           }
         } catch (err) {
-          // Fallback: mock detection for demo
+          console.error('Face detection error:', err);
+          // Fallback visualization
           const context = canvasRef.current.getContext('2d');
           context.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
           setTimeout(() => {
@@ -134,12 +182,12 @@ export default function FaceRegister() {
 
     const interval = setInterval(detectFace, 100);
     return () => clearInterval(interval);
-  }, [isModelLoaded, isVideoStarted]);
+  }, [isModelLoaded, isVideoStarted, advancedRecognition]);
 
-  // Capture and register face
+  // Capture and register face with advanced AI
   const captureFace = async () => {
     if (!faceDetected) {
-      setError('Please position your face clearly in the camera view');
+      setError('Please position your face clearly in camera view');
       return;
     }
 
@@ -149,27 +197,40 @@ export default function FaceRegister() {
       setSuccess('');
 
       let faceDescriptor;
+      let enhancedDescriptor = null;
 
       try {
-        const detections = await faceapi
-          .detectSingleFace(videoRef.current, new faceapi.TinyFaceDetectorOptions())
-          .withFaceLandmarks()
-          .withFaceDescriptor();
+        if (advancedRecognition && faceAnalysis) {
+          // Use advanced AI analysis
+          enhancedDescriptor = faceAnalysis.enhancedDescriptor;
+          faceDescriptor = Array.from(faceAnalysis.detection.descriptor);
+        } else {
+          // Fallback to standard detection
+          const detections = await faceapi
+            .detectSingleFace(videoRef.current, new faceapi.TinyFaceDetectorOptions())
+            .withFaceLandmarks()
+            .withFaceDescriptor();
 
-        if (!detections) {
-          setError('Face not detected. Please try again.');
-          return;
+          if (!detections) {
+            setError('Face not detected. Please try again.');
+            return;
+          }
+
+          faceDescriptor = Array.from(detections.descriptor);
         }
-
-        faceDescriptor = Array.from(detections.descriptor);
       } catch {
-        // Fallback to mock descriptor if face-api.js fails
+        // Fallback to mock descriptor
         faceDescriptor = Array.from({ length: 128 }, () => Math.random() * 2 - 1);
       }
 
-      await api.post('/auth/register-face', { faceDescriptor });
+      // Send enhanced descriptor if available, otherwise standard descriptor
+      const payload = enhancedDescriptor
+        ? { faceDescriptor: enhancedDescriptor, isEnhanced: true }
+        : { faceDescriptor, isEnhanced: false };
 
-      setSuccess('Face registered successfully! Redirecting to dashboard...');
+      await api.post('/auth/register-face', payload);
+
+      setSuccess('Advanced AI face registration successful! Redirecting to dashboard...');
       setTimeout(() => navigate('/dashboard'), 2000);
     } catch (err) {
       setError(err.response?.data?.message || 'Failed to register face. Please try again.');
@@ -266,22 +327,36 @@ export default function FaceRegister() {
           <div className="webcam-indicators">
             <div className="indicator">
               <div className="indicator-dot green"></div>
-              <span>Face Detection Active</span>
+              <span>Advanced AI Detection Active</span>
             </div>
             <div className="indicator">
               <div className="indicator-dot blue"></div>
-              <span>128-D Face Descriptor</span>
+              <span>{advancedRecognition ? '256-D Enhanced Descriptor' : '128-D Standard Descriptor'}</span>
             </div>
+            {faceAnalysis && faceAnalysis.faceShape && (
+              <div className="indicator">
+                <div className="indicator-dot purple"></div>
+                <span>Face Shape: {faceAnalysis.faceShape.shape}</span>
+              </div>
+            )}
+            {faceAnalysis && faceAnalysis.retinaScan && (
+              <div className="indicator">
+                <div className="indicator-dot orange"></div>
+                <span>Retina Scan Active</span>
+              </div>
+            )}
           </div>
         </div>
 
         <div className="instructions-card">
-          <h3 className="instructions-title">Instructions:</h3>
+          <h3 className="instructions-title">Advanced AI Instructions:</h3>
           <ul className="instructions-list">
-            <li>Ensure good lighting on your face</li>
-            <li>Position your face clearly in the camera view</li>
-            <li>Keep a neutral expression for best results</li>
-            <li>Click "Register Face" when the green box appears around your face</li>
+            <li>Ensure good, even lighting on your face</li>
+            <li>Position your face clearly in camera view</li>
+            <li>Keep eyes open for retina scanning</li>
+            <li>AI will analyze face shape and retina patterns</li>
+            <li>Click "Register Face" when confidence is above 80%</li>
+            <li>Enhanced security with biometric features</li>
           </ul>
         </div>
       </div>

@@ -28,6 +28,7 @@ export default function Navbar() {
               <Link to="/mark-attendance" className={`nav-link${isActive('/mark-attendance') ? ' active' : ''}`}>Mark Attendance</Link>
               <Link to="/face-register" className={`nav-link${isActive('/face-register') ? ' active' : ''}`}>Register Face</Link>
               <Link to="/attendance-history" className={`nav-link${isActive('/attendance-history') ? ' active' : ''}`}>History</Link>
+              <Link to="/settings" className={`nav-link${isActive('/settings') ? ' active' : ''}`}>Settings</Link>
               <div className="nav-user">
                 <span className="nav-user-name">{user.name}</span>
                 <div className="nav-avatar">
@@ -72,6 +73,7 @@ export default function Navbar() {
             <Link to="/mark-attendance" onClick={() => setMobileMenuOpen(false)}>Mark Attendance</Link>
             <Link to="/face-register" onClick={() => setMobileMenuOpen(false)}>Register Face</Link>
             <Link to="/attendance-history" onClick={() => setMobileMenuOpen(false)}>History</Link>
+            <Link to="/settings" onClick={() => setMobileMenuOpen(false)}>Settings</Link>
             <div className="mobile-menu-divider">
               <span style={{ color: 'var(--text-primary)' }}>{user.name}</span>
               <button

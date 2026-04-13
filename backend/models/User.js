@@ -43,9 +43,23 @@ const userSchema = new mongoose.Schema({
     type: [Number],
     default: [],
   },
+  enhancedFaceDescriptor: {
+    type: [Number],
+    default: [],
+  },
   faceRegistered: {
     type: Boolean,
     default: false,
+  },
+  faceShape: {
+    type: String,
+    enum: ['oval', 'round', 'square', 'heart', 'diamond'],
+  },
+  retinaConfidence: {
+    type: Number,
+    min: 0,
+    max: 1,
+    default: 0,
   },
 }, {
   timestamps: true,

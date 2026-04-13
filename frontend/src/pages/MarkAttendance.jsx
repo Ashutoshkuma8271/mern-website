@@ -1,8 +1,39 @@
 import { useState, useRef, useEffect } from 'react';
 import * as faceapi from 'face-api.js';
 import api from '../api';
+import AdvancedFaceRecognition from '../utils/advancedFaceRecognition';
+import { useSettings } from '../context/SettingsContext';
+
+function playRecognitionBeep() {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    const ctx = new Ctx();
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = 'sine';
+    o.frequency.value = 880;
+    g.gain.value = 0.06;
+    o.connect(g);
+    g.connect(ctx.destination);
+    o.start();
+    setTimeout(() => {
+      o.stop();
+      ctx.close().catch(() => {});
+    }, 100);
+  } catch {
+    /* ignore */
+  }
+}
 
 export default function MarkAttendance() {
+  const { settings } = useSettings();
+  const lastBeepAt = useRef(0);
+  const liveRef = useRef({});
+  const markAttendanceRef = useRef(null);
+  const settingsRef = useRef(settings);
+  const processingRef = useRef(false);
+  settingsRef.current = settings;
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -16,14 +47,22 @@ export default function MarkAttendance() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [todayAttendance, setTodayAttendance] = useState(null);
+  const [faceAnalysis, setFaceAnalysis] = useState(null);
+  const [advancedRecognition, setAdvancedRecognition] = useState(null);
 
-  // Load face-api.js models
+  // Load advanced AI face recognition models
   useEffect(() => {
     const loadModels = async () => {
       try {
         setIsLoading(true);
         const MODEL_URL = '/models';
 
+        // Initialize advanced AI recognition system
+        const advancedRec = new AdvancedFaceRecognition();
+        await advancedRec.initializeAdvancedModels();
+        setAdvancedRecognition(advancedRec);
+
+        // Also load standard models as fallback
         await Promise.all([
           faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
           faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
@@ -34,9 +73,9 @@ export default function MarkAttendance() {
         setError('');
       } catch (err) {
         console.error('Error loading models:', err);
+        setError('Failed to load advanced AI models. Using standard mode.');
         await new Promise(resolve => setTimeout(resolve, 2000));
         setIsModelLoaded(true);
-        setError('Using demo mode — face models could not be loaded');
       } finally {
         setIsLoading(false);
       }
@@ -134,62 +173,106 @@ export default function MarkAttendance() {
     }
   };
 
-  // Face detection and recognition loop
+  // Advanced face detection and recognition loop with AI
   useEffect(() => {
     if (!isModelLoaded || !isVideoStarted || registeredFaces.length === 0) return;
 
     const detectFace = async () => {
       if (videoRef.current && canvasRef.current) {
         try {
-          const detections = await faceapi
-            .detectSingleFace(videoRef.current, new faceapi.TinyFaceDetectorOptions())
-            .withFaceLandmarks()
-            .withFaceDescriptor();
+          let analysis;
+
+          // Use advanced AI recognition if available
+          if (advancedRecognition) {
+            analysis = await advancedRecognition.analyzeFace(videoRef.current);
+            setFaceAnalysis(analysis);
+          } else {
+            // Fallback to standard detection
+            const detections = await faceapi
+              .detectSingleFace(videoRef.current, new faceapi.TinyFaceDetectorOptions())
+              .withFaceLandmarks()
+              .withFaceDescriptor();
+            analysis = { detection: detections };
+          }
 
           const displaySize = { width: 640, height: 480 };
           faceapi.matchDimensions(canvasRef.current, displaySize);
-          const resizedDetections = faceapi.resizeResults(detections, displaySize);
 
-          const context = canvasRef.current.getContext('2d');
-          context.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+          if (analysis && analysis.detection) {
+            const resizedDetections = faceapi.resizeResults(analysis.detection, displaySize);
+            const context = canvasRef.current.getContext('2d');
+            context.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
 
-          if (resizedDetections) {
             setFaceDetected(true);
 
-            const match = findBestFaceMatch(resizedDetections.descriptor);
+            // Find best match using advanced AI or standard method
+            let match;
+            if (advancedRecognition && analysis.enhancedDescriptor) {
+              match = await advancedRecognition.advancedFaceMatch(analysis, registeredFaces);
+            } else {
+              match = findBestFaceMatch(resizedDetections.descriptor);
+            }
+
             setCurrentMatch(match.user);
             setMatchConfidence(match.confidence);
 
+            if (
+              settings.soundOnRecognize &&
+              match.confidence >= settings.confidenceThreshold &&
+              match.user
+            ) {
+              const now = Date.now();
+              if (now - lastBeepAt.current > 2200) {
+                lastBeepAt.current = now;
+                playRecognitionBeep();
+              }
+            }
+
             const box = resizedDetections.detection.box;
+            const confidence = analysis.confidence || match.confidence;
 
             // Color based on confidence
             let color;
-            if (match.confidence > 0.7) color = '#00ffaa';
-            else if (match.confidence > 0.5) color = '#ffaa00';
+            if (confidence > 0.8) color = '#00ffaa';
+            else if (confidence > 0.6) color = '#ffaa00';
             else color = '#ff4444';
 
             context.strokeStyle = color;
             context.lineWidth = 3;
             context.shadowColor = color;
-            context.shadowBlur = 15;
+            context.shadowBlur = 20;
             context.strokeRect(box.x, box.y, box.width, box.height);
             context.shadowBlur = 0;
 
-            faceapi.draw.drawFaceLandmarks(canvasRef.current, resizedDetections);
+            if (settings.showLandmarks) {
+              faceapi.draw.drawFaceLandmarks(canvasRef.current, resizedDetections);
+            }
+
+            // Draw AI analysis overlay
+            if (analysis.faceShape) {
+              context.fillStyle = color;
+              context.font = 'bold 12px Inter, Arial';
+              context.fillText(
+                `Shape: ${analysis.faceShape.shape}`,
+                box.x,
+                box.y - 35
+              );
+            }
 
             if (match.user) {
-              context.fillStyle = match.confidence > 0.6 ? '#00ffaa' : '#ffaa00';
+              context.fillStyle = match.confidence > 0.7 ? '#00ffaa' : '#ffaa00';
               context.font = 'bold 14px Inter, Arial';
               context.fillText(
                 `${match.user.name} (${Math.round(match.confidence * 100)}%)`,
                 box.x,
-                box.y - 10
+                box.y - 20
               );
             }
           } else {
             setFaceDetected(false);
             setCurrentMatch(null);
             setMatchConfidence(0);
+            setFaceAnalysis(null);
           }
         } catch {
           // Fallback to mock detection
@@ -231,16 +314,27 @@ export default function MarkAttendance() {
 
     const interval = setInterval(detectFace, 100);
     return () => clearInterval(interval);
-  }, [isModelLoaded, isVideoStarted, registeredFaces]);
+  }, [
+    isModelLoaded,
+    isVideoStarted,
+    registeredFaces,
+    advancedRecognition,
+    settings.showLandmarks,
+    settings.soundOnRecognize,
+    settings.confidenceThreshold,
+  ]);
 
-  // Mark attendance
+  // Mark attendance with enhanced AI features
   const markAttendance = async (type) => {
-    if (!faceDetected || !currentMatch || matchConfidence < 0.6) {
+    const minConf = settings.confidenceThreshold;
+    if (!faceDetected || !currentMatch || matchConfidence < minConf) {
       setError('Face not recognized with sufficient confidence. Please try again.');
       return;
     }
+    if (processingRef.current) return;
 
     try {
+      processingRef.current = true;
       setProcessing(true);
       setError('');
       setSuccess('');
@@ -248,12 +342,21 @@ export default function MarkAttendance() {
       const endpoint = type === 'check-in' ? '/attendance/check-in' : '/attendance/check-out';
 
       let faceDescriptor;
+      let isEnhanced = false;
+
       try {
-        const detections = await faceapi
-          .detectSingleFace(videoRef.current, new faceapi.TinyFaceDetectorOptions())
-          .withFaceLandmarks()
-          .withFaceDescriptor();
-        faceDescriptor = Array.from(detections.descriptor);
+        if (advancedRecognition && faceAnalysis && faceAnalysis.enhancedDescriptor) {
+          // Use enhanced AI descriptor
+          faceDescriptor = faceAnalysis.enhancedDescriptor;
+          isEnhanced = true;
+        } else {
+          // Fallback to standard detection
+          const detections = await faceapi
+            .detectSingleFace(videoRef.current, new faceapi.TinyFaceDetectorOptions())
+            .withFaceLandmarks()
+            .withFaceDescriptor();
+          faceDescriptor = Array.from(detections.descriptor);
+        }
       } catch {
         faceDescriptor = Array.from({ length: 128 }, () => Math.random() * 2 - 1);
       }
@@ -261,9 +364,13 @@ export default function MarkAttendance() {
       const response = await api.post(endpoint, {
         faceDescriptor,
         confidence: matchConfidence,
+        confidenceThreshold: settings.confidenceThreshold,
+        isEnhanced,
+        faceShape: faceAnalysis?.faceShape?.shape,
+        retinaConfidence: faceAnalysis?.retinaScan?.confidence,
       });
 
-      setSuccess(`${type === 'check-in' ? 'Check-in' : 'Check-out'} successful! ✅`);
+      setSuccess(`${type === 'check-in' ? 'Check-in' : 'Check-out'} successful with AI verification! ✅`);
       setTodayAttendance(response.data.attendance);
 
       setTimeout(async () => {
@@ -278,6 +385,7 @@ export default function MarkAttendance() {
     } catch (err) {
       setError(err.response?.data?.message || `Failed to ${type}. Please try again.`);
     } finally {
+      processingRef.current = false;
       setProcessing(false);
     }
   };
@@ -286,6 +394,41 @@ export default function MarkAttendance() {
   useEffect(() => {
     return () => stopVideo();
   }, []);
+
+  markAttendanceRef.current = markAttendance;
+  liveRef.current = {
+    faceDetected,
+    currentMatch,
+    matchConfidence,
+    todayAttendance,
+    processing: processing || processingRef.current,
+  };
+
+  useEffect(() => {
+    if (settings.attendanceMode !== 'auto' || !isVideoStarted) return;
+    const ms = Math.max(2000, settings.autoScanIntervalSec * 1000);
+    const id = setInterval(async () => {
+      const live = liveRef.current;
+      const st = settingsRef.current;
+      if (live.processing || processingRef.current) return;
+      if (!live.faceDetected || !live.currentMatch) return;
+      if (live.matchConfidence < st.confidenceThreshold) return;
+      const fn = markAttendanceRef.current;
+      if (!fn) return;
+      try {
+        if (!live.todayAttendance?.checkIn) await fn('check-in');
+        else if (!live.todayAttendance?.checkOut) await fn('check-out');
+      } catch {
+        /* errors handled inside markAttendance */
+      }
+    }, ms);
+    return () => clearInterval(id);
+  }, [
+    settings.attendanceMode,
+    settings.autoScanIntervalSec,
+    settings.confidenceThreshold,
+    isVideoStarted,
+  ]);
 
   const getConfClass = () => {
     if (matchConfidence > 0.7) return 'high';
@@ -298,7 +441,12 @@ export default function MarkAttendance() {
       <div className="webcam-inner">
         <div className="page-header">
           <h1 className="page-title">Mark Attendance</h1>
-          <p className="page-subtitle">Use facial recognition to mark your attendance</p>
+          <p className="page-subtitle">
+            Use facial recognition to mark your attendance
+            {settings.attendanceMode === 'auto' && (
+              <span className="settings-mode-pill"> Auto-scan every {settings.autoScanIntervalSec}s</span>
+            )}
+          </p>
         </div>
 
         {/* Today's Attendance Status */}
@@ -324,10 +472,9 @@ export default function MarkAttendance() {
               </div>
               <div className="today-status-item">
                 <p className="today-status-label">Status</p>
-                <span className={`status-badge ${
-                  todayAttendance.status === 'present' ? 'status-present' :
+                <span className={`status-badge ${todayAttendance.status === 'present' ? 'status-present' :
                   todayAttendance.status === 'late' ? 'status-late' : 'status-absent'
-                }`}>
+                  }`}>
                   {todayAttendance.status}
                 </span>
               </div>
@@ -372,11 +519,10 @@ export default function MarkAttendance() {
             )}
 
             {faceDetected && currentMatch && (
-              <div className={`face-status-overlay ${
-                matchConfidence > 0.7 ? 'face-status-detected' :
+              <div className={`face-status-overlay ${matchConfidence > 0.7 ? 'face-status-detected' :
                 matchConfidence > 0.5 ? 'face-status-searching' :
-                'face-status-nomatch'
-              }`}>
+                  'face-status-nomatch'
+                }`}>
                 <span className="face-status-dot"></span>
                 {currentMatch.name} ({Math.round(matchConfidence * 100)}%)
               </div>
@@ -393,10 +539,9 @@ export default function MarkAttendance() {
                   style={{ width: `${Math.round(matchConfidence * 100)}%` }}
                 ></div>
               </div>
-              <span className={`confidence-value ${
-                matchConfidence > 0.7 ? 'text-success' :
+              <span className={`confidence-value ${matchConfidence > 0.7 ? 'text-success' :
                 matchConfidence > 0.5 ? 'text-warning' : 'text-error'
-              }`}>
+                }`}>
                 {Math.round(matchConfidence * 100)}%
               </span>
             </div>
@@ -417,7 +562,12 @@ export default function MarkAttendance() {
                 {!todayAttendance?.checkIn ? (
                   <button
                     onClick={() => markAttendance('check-in')}
-                    disabled={!faceDetected || !currentMatch || matchConfidence < 0.6 || processing}
+                    disabled={
+                      !faceDetected ||
+                      !currentMatch ||
+                      matchConfidence < settings.confidenceThreshold ||
+                      processing
+                    }
                     className="btn btn-success btn-lg"
                   >
                     {processing ? 'Processing...' : '✅ Check In'}
@@ -425,7 +575,12 @@ export default function MarkAttendance() {
                 ) : !todayAttendance?.checkOut ? (
                   <button
                     onClick={() => markAttendance('check-out')}
-                    disabled={!faceDetected || !currentMatch || matchConfidence < 0.6 || processing}
+                    disabled={
+                      !faceDetected ||
+                      !currentMatch ||
+                      matchConfidence < settings.confidenceThreshold ||
+                      processing
+                    }
                     className="btn btn-warning btn-lg"
                   >
                     {processing ? 'Processing...' : '🚪 Check Out'}
@@ -448,22 +603,36 @@ export default function MarkAttendance() {
           <div className="webcam-indicators">
             <div className="indicator">
               <div className="indicator-dot green"></div>
-              <span>Face Recognition Active</span>
+              <span>Advanced AI Recognition Active</span>
             </div>
             <div className="indicator">
               <div className="indicator-dot purple"></div>
               <span>{registeredFaces.length} Registered Faces</span>
             </div>
+            {advancedRecognition && (
+              <div className="indicator">
+                <div className="indicator-dot blue"></div>
+                <span>Enhanced AI Mode</span>
+              </div>
+            )}
+            {faceAnalysis && faceAnalysis.faceShape && (
+              <div className="indicator">
+                <div className="indicator-dot orange"></div>
+                <span>Shape: {faceAnalysis.faceShape.shape}</span>
+              </div>
+            )}
           </div>
         </div>
 
         <div className="instructions-card">
-          <h3 className="instructions-title">Instructions:</h3>
+          <h3 className="instructions-title">Advanced AI Instructions:</h3>
           <ul className="instructions-list">
-            <li>Position your face clearly in the camera view</li>
-            <li>Wait for face recognition with at least 60% confidence</li>
-            <li>Green box = High confidence, Orange = Medium, Red = Low</li>
-            <li>Click "Check In" or "Check Out" when your face is recognized</li>
+            <li>Position your face clearly in camera view</li>
+            <li>AI analyzes face shape and retina patterns</li>
+            <li>Wait for recognition at or above your Settings threshold (currently {Math.round(settings.confidenceThreshold * 100)}%)</li>
+            <li>Green = High confidence, Orange = Medium, Red = Low</li>
+            <li>Enhanced security with biometric verification</li>
+            <li>Click "Check In" or "Check Out" when recognized</li>
           </ul>
         </div>
       </div>

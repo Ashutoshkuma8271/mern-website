@@ -1,7 +1,23 @@
 import axios from 'axios';
 
+function resolveApiBaseUrl() {
+  const fromEnv = import.meta.env.VITE_API_BASE_URL;
+  if (fromEnv && String(fromEnv).trim()) {
+    return String(fromEnv).replace(/\/$/, '');
+  }
+  // Dev: Vite proxy → backend (vite.config.js)
+  if (import.meta.env.DEV) return '/api';
+  // Production (e.g. GitHub Pages): must set VITE_API_BASE_URL at build time to your public HTTPS API
+  if (import.meta.env.PROD) {
+    console.warn(
+      '[FaceAttend] Missing VITE_API_BASE_URL in production build. Create frontend/.env.production with your deployed API URL, then rebuild.'
+    );
+  }
+  return '/api';
+}
+
 const API = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
+  baseURL: resolveApiBaseUrl(),
 });
 
 // Attach JWT token to every request if available
@@ -22,7 +38,8 @@ API.interceptors.response.use(
       localStorage.removeItem('user');
       // Only redirect if not already on auth pages
       if (!window.location.pathname.includes('/login') && !window.location.pathname.includes('/register')) {
-        window.location.href = '/login';
+        const base = (import.meta.env.BASE_URL || '/').replace(/\/$/, '');
+        window.location.href = `${base}/login`;
       }
     }
     return Promise.reject(error);

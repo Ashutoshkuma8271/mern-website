@@ -1,7 +1,7 @@
 const express = require('express');
-const Attendance = require('../models/Attendance');
-const User = require('../models/User');
-const auth = require('../middleware/auth');
+const Attendance = require('../Attendance');
+const User = require('../User');
+const auth = require('../../middleware/auth');
 
 const router = express.Router();
 
@@ -18,7 +18,7 @@ const calculateFaceDistance = (descriptor1, descriptor2) => {
 const findBestFaceMatch = (detectedDescriptor, registeredFaces) => {
   let bestMatch = null;
   let minDistance = Infinity;
-  
+
   for (const face of registeredFaces) {
     if (face.faceDescriptor && face.faceDescriptor.length > 0) {
       const distance = calculateFaceDistance(detectedDescriptor, face.faceDescriptor);
@@ -28,10 +28,10 @@ const findBestFaceMatch = (detectedDescriptor, registeredFaces) => {
       }
     }
   }
-  
+
   // Convert distance to confidence (lower distance = higher confidence)
   const confidence = Math.max(0, 1 - (minDistance / 0.6)); // 0.6 is a typical threshold
-  
+
   return { user: bestMatch, confidence, distance: minDistance };
 };
 
@@ -45,7 +45,7 @@ router.post('/check-in', auth, async (req, res) => {
     // Check if already checked in today
     const existingAttendance = await Attendance.getTodayAttendance(userId);
     if (existingAttendance && existingAttendance.checkIn) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         message: 'Already checked in today',
         attendance: existingAttendance
       });
@@ -54,26 +54,31 @@ router.post('/check-in', auth, async (req, res) => {
     // If face descriptor provided, verify identity
     let verifiedUserId = userId;
     let finalConfidence = confidence || 1.0;
-    
+
     if (faceDescriptor && faceDescriptor.length > 0) {
       // Get all registered faces for matching
-      const registeredFaces = await User.find({ 
+      const registeredFaces = await User.find({
         faceRegistered: true,
         faceDescriptor: { $exists: true, $ne: [] }
       }).select('_id name email faceDescriptor');
 
       if (registeredFaces.length === 0) {
-        return res.status(400).json({ 
-          message: 'No registered faces found in the system' 
+        return res.status(400).json({
+          message: 'No registered faces found in the system'
         });
       }
 
       const match = findBestFaceMatch(faceDescriptor, registeredFaces);
-      
-      if (match.confidence < 0.6) { // 60% confidence threshold
-        return res.status(401).json({ 
+
+      const minConf =
+        typeof req.body.confidenceThreshold === 'number'
+          ? Math.max(0.3, Math.min(0.85, req.body.confidenceThreshold))
+          : 0.6;
+
+      if (match.confidence < minConf) {
+        return res.status(401).json({
           message: 'Face not recognized. Please try again or register your face.',
-          confidence: match.confidence
+          confidence: match.confidence,
         });
       }
 
@@ -112,15 +117,15 @@ router.post('/check-out', auth, async (req, res) => {
     const userId = req.user.id;
 
     let attendance = await Attendance.getTodayAttendance(userId);
-    
+
     if (!attendance) {
-      return res.status(404).json({ 
-        message: 'No check-in record found for today' 
+      return res.status(404).json({
+        message: 'No check-in record found for today'
       });
     }
 
     if (attendance.checkOut) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         message: 'Already checked out today',
         attendance
       });
@@ -128,19 +133,24 @@ router.post('/check-out', auth, async (req, res) => {
 
     // If face descriptor provided, verify identity
     let finalConfidence = confidence || 1.0;
-    
+
     if (faceDescriptor && faceDescriptor.length > 0) {
-      const registeredFaces = await User.find({ 
+      const registeredFaces = await User.find({
         faceRegistered: true,
         faceDescriptor: { $exists: true, $ne: [] }
       }).select('_id name email faceDescriptor');
 
       const match = findBestFaceMatch(faceDescriptor, registeredFaces);
-      
-      if (match.confidence < 0.6) {
-        return res.status(401).json({ 
+
+      const minConf =
+        typeof req.body.confidenceThreshold === 'number'
+          ? Math.max(0.3, Math.min(0.85, req.body.confidenceThreshold))
+          : 0.6;
+
+      if (match.confidence < minConf) {
+        return res.status(401).json({
           message: 'Face not recognized. Please try again.',
-          confidence: match.confidence
+          confidence: match.confidence,
         });
       }
 
@@ -165,14 +175,36 @@ router.post('/check-out', auth, async (req, res) => {
   }
 });
 
+// DELETE /api/attendance/my-records?scope=today|all — current user only
+router.delete('/my-records', auth, async (req, res) => {
+  try {
+    const { scope } = req.query;
+    const userId = req.user.id;
+
+    if (scope === 'today') {
+      const today = new Date().toISOString().split('T')[0];
+      await Attendance.deleteOne({ userId, date: today });
+    } else if (scope === 'all') {
+      await Attendance.deleteMany({ userId });
+    } else {
+      return res.status(400).json({ message: 'Query "scope" must be "today" or "all"' });
+    }
+
+    res.json({ message: scope === 'today' ? "Today's attendance cleared" : 'All attendance records cleared' });
+  } catch (error) {
+    console.error('Clear my records error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 // GET /api/attendance/today
 router.get('/today', auth, async (req, res) => {
   try {
     const userId = req.user.id;
     const attendance = await Attendance.getTodayAttendance(userId);
-    
+
     if (!attendance) {
-      return res.json({ 
+      return res.json({
         message: 'No attendance record for today',
         attendance: null
       });
@@ -192,7 +224,7 @@ router.get('/history', auth, async (req, res) => {
     const { startDate, endDate, page = 1, limit = 30 } = req.query;
 
     const attendance = await Attendance.getAttendanceHistory(userId, startDate, endDate);
-    
+
     // Pagination
     const startIndex = (page - 1) * limit;
     const endIndex = page * limit;
@@ -217,13 +249,13 @@ router.get('/stats', auth, async (req, res) => {
   try {
     const userId = req.user.id;
     const { month, year } = req.query;
-    
+
     const currentDate = new Date();
     const selectedMonth = month ? parseInt(month) : currentDate.getMonth() + 1;
     const selectedYear = year ? parseInt(year) : currentDate.getFullYear();
 
     const stats = await Attendance.getAttendanceStats(userId, selectedYear, selectedMonth);
-    
+
     // Format stats
     const formattedStats = {
       present: 0,
@@ -255,9 +287,9 @@ router.get('/all', auth, async (req, res) => {
     }
 
     const { startDate, endDate, page = 1, limit = 50 } = req.query;
-    
+
     const attendance = await Attendance.getAllAttendance(startDate, endDate);
-    
+
     // Pagination
     const startIndex = (page - 1) * limit;
     const endIndex = page * limit;
