@@ -61,13 +61,15 @@ function devApiProxyPlugin(envOverride) {
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
   const apiTargetOverride = env.VITE_DEV_PROXY_TARGET || '';
+  // Vercel needs root-relative assets/routes, GitHub Pages needs repo base path.
+  const basePath = env.VITE_BASE_PATH || (process.env.VERCEL ? '/' : '/mern-website/');
 
   return {
     plugins: [
       react(),
       ...(mode === 'development' ? [devApiProxyPlugin(apiTargetOverride)] : []),
     ],
-    base: '/mern-website/',
+    base: basePath,
     server: {
       port: 5173,
     },
