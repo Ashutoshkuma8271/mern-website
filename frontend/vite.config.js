@@ -63,9 +63,9 @@ export default defineConfig(({ mode }) => {
   const apiTargetOverride = env.VITE_DEV_PROXY_TARGET || '';
   const isVercelBuild = process.env.VERCEL === '1' || process.env.VERCEL === 'true';
   // Keep support for custom base path (e.g. GitHub Pages), but force "/" on Vercel.
-  const normalizedBasePath = env.VITE_BASE_PATH
-    ? `/${String(env.VITE_BASE_PATH).replace(/^\/+|\/+$/g, '')}/`
-    : '/';
+  const rawBasePath = String(env.VITE_BASE_PATH || '').trim();
+  const strippedBasePath = rawBasePath.replace(/^\/+|\/+$/g, '');
+  const normalizedBasePath = strippedBasePath ? `/${strippedBasePath}/` : '/';
   const basePath = isVercelBuild ? '/' : normalizedBasePath;
 
   return {

@@ -1,12 +1,13 @@
 import axios from 'axios';
 
 function resolveApiBaseUrl() {
+  // Dev should use Vite proxy so frontend talks to local backend automatically.
+  if (import.meta.env.DEV) return '/api';
+
   const fromEnv = import.meta.env.VITE_API_BASE_URL;
   if (fromEnv && String(fromEnv).trim()) {
     return String(fromEnv).replace(/\/$/, '');
   }
-  // Dev: Vite proxy → backend (vite.config.js)
-  if (import.meta.env.DEV) return '/api';
   // Production (e.g. GitHub Pages): must set VITE_API_BASE_URL at build time to your public HTTPS API
   if (import.meta.env.PROD) {
     console.warn(
