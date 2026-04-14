@@ -61,8 +61,12 @@ function devApiProxyPlugin(envOverride) {
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
   const apiTargetOverride = env.VITE_DEV_PROXY_TARGET || '';
-  // Default to root for cloud hosts (e.g. Vercel). Override for GitHub Pages if needed.
-  const basePath = env.VITE_BASE_PATH || '/';
+  const isVercelBuild = process.env.VERCEL === '1' || process.env.VERCEL === 'true';
+  // Keep support for custom base path (e.g. GitHub Pages), but force "/" on Vercel.
+  const normalizedBasePath = env.VITE_BASE_PATH
+    ? `/${String(env.VITE_BASE_PATH).replace(/^\/+|\/+$/g, '')}/`
+    : '/';
+  const basePath = isVercelBuild ? '/' : normalizedBasePath;
 
   return {
     plugins: [
