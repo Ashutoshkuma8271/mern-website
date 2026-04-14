@@ -1,12 +1,20 @@
 import axios from 'axios';
 
+function normalizeApiBaseUrl(url) {
+  const trimmed = String(url || '').trim().replace(/\/$/, '');
+  if (!trimmed) return '';
+  // Backend mounts routes at /api/*, so ensure production base URL includes /api.
+  if (trimmed.endsWith('/api')) return trimmed;
+  return `${trimmed}/api`;
+}
+
 function resolveApiBaseUrl() {
   // Dev should use Vite proxy so frontend talks to local backend automatically.
   if (import.meta.env.DEV) return '/api';
 
   const fromEnv = import.meta.env.VITE_API_BASE_URL;
   if (fromEnv && String(fromEnv).trim()) {
-    return String(fromEnv).replace(/\/$/, '');
+    return normalizeApiBaseUrl(fromEnv);
   }
   // Production (e.g. GitHub Pages): must set VITE_API_BASE_URL at build time to your public HTTPS API
   if (import.meta.env.PROD) {
